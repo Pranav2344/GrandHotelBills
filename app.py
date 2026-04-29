@@ -23,8 +23,15 @@ app.secret_key = os.environ.get('SECRET_KEY', 'c8f9a2b6e4d1c7f5a3b8e9d2c6f4a1b7e
 app.config['JSON_SORT_KEYS'] = False
 app.config['SEND_FILE_MAX_AGE_DEFAULT'] = 3600  # Cache static files for 1 hour
 
-# Initialize database on first run
-db.init_database()
+_database_initialized = False
+
+
+@app.before_request
+def _ensure_database_initialized():
+    global _database_initialized
+    if not _database_initialized:
+        db.init_database()
+        _database_initialized = True
 
 @app.route('/')
 def index():
