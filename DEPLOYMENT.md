@@ -15,7 +15,7 @@
 ### Core Application Files
 - `app.py` - Main Flask application (production-ready)
 - `database.py` - Database operations (debug prints removed)
-- `schema.sql` - Database schema
+- `mysql_schema.sql` - Database schema
 - `requirements.txt` - Python dependencies
 
 ### Configuration Files
@@ -59,7 +59,7 @@ cp .env.example .env
 ```
 FLASK_ENV=production
 SECRET_KEY=<your_generated_key_here>
-DATABASE_URL=sqlite:///hotel_billing.db
+DATABASE_URL=mysql://username:password@db-host:3306/grand_hotel
 ```
 
 ## 🌐 Deployment Options
@@ -199,11 +199,10 @@ services:
     build: .
     ports:
       - "5000:5000"
-    volumes:
-      - ./hotel_billing.db:/app/hotel_billing.db
     environment:
       - FLASK_ENV=production
       - SECRET_KEY=${SECRET_KEY}
+      - DATABASE_URL=${DATABASE_URL}
 ```
 
 Deploy:
@@ -247,8 +246,8 @@ docker-compose up -d
 
 ### Database Not Initializing
 ```bash
-# Delete database and restart
-rm hotel_billing.db
+# Recreate database and restart
+# mysql -u username -p -e "DROP DATABASE IF EXISTS grand_hotel; CREATE DATABASE grand_hotel;"
 python app.py
 ```
 

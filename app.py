@@ -1,7 +1,22 @@
 from flask import Flask, render_template, request, redirect, url_for, flash, jsonify
 from datetime import datetime, date
-import database as db
 import os
+
+from dotenv import load_dotenv
+
+load_dotenv()
+
+import database as db
+
+
+def _as_date(value):
+    if isinstance(value, date):
+        return value
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, str):
+        return datetime.strptime(value, '%Y-%m-%d').date()
+    raise TypeError(f'Unsupported date value: {type(value)!r}')
 
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', 'c8f9a2b6e4d1c7f5a3b8e9d2c6f4a1b7e5d3c9f2a6b4e8d1c7f5a3b9e2d6c4f1')
@@ -182,7 +197,7 @@ def booking_details(booking_id):
         return redirect(url_for('index'))
     
     # Calculate current charges
-    check_in = datetime.strptime(booking['check_in_date'], '%Y-%m-%d').date()
+    check_in = _as_date(booking['check_in_date'])
     days = (date.today() - check_in).days
     if days <= 0:
         days = 1
@@ -210,8 +225,8 @@ def invoice(bill_id):
     services = db.get_booking_services(bill['booking_id'])
     
     # Calculate nights
-    check_in = datetime.strptime(bill['check_in_date'], '%Y-%m-%d').date()
-    check_out = datetime.strptime(bill['check_out_date'], '%Y-%m-%d').date()
+    check_in = _as_date(bill['check_in_date'])
+    check_out = _as_date(bill['check_out_date'])
     nights = (check_out - check_in).days
     if nights <= 0:
         nights = 1
@@ -229,7 +244,7 @@ def api_calculate_bill(booking_id):
     """API endpoint to calculate bill"""
     check_out_date = request.args.get('checkout_date', date.today().strftime('%Y-%m-%d'))
     bill_details = db.calculate_bill(booking_id, check_out_date)
-    
+
     if bill_details:
         return jsonify(bill_details)
     else:

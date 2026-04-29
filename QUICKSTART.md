@@ -17,10 +17,15 @@ python -m venv .venv
 # 4. Install dependencies
 pip install -r requirements.txt
 
-# 5. Run application
+# 5. Configure MySQL in .env
+# DATABASE_URL=mysql://username:password@localhost:3306/grand_hotel
+# and create DB once:
+# mysql -u username -p -e "CREATE DATABASE IF NOT EXISTS grand_hotel;"
+
+# 6. Run application
 python app.py
 
-# 6. Open browser
+# 7. Open browser
 # http://127.0.0.1:5000
 ```
 
@@ -108,7 +113,8 @@ kill $(lsof -t -i:5000)
 
 **Database reset:**
 ```bash
-rm hotel_billing.db
+# Create a fresh MySQL database, then restart app
+# mysql -u username -p -e "DROP DATABASE IF EXISTS grand_hotel; CREATE DATABASE grand_hotel;"
 python app.py
 ```
 

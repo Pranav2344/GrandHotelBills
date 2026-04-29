@@ -31,7 +31,7 @@ A modern, production-ready hotel management and billing system built with Flask,
 ## 🚀 Technology Stack
 
 - **Backend**: Python 3.11+ with Flask
-- **Database**: SQLite 3
+- **Database**: MySQL (via `DATABASE_URL`)
 - **Frontend**: HTML5, CSS3, JavaScript (Vanilla)
 - **Images**: Unsplash integration for high-quality hotel imagery
 - **Fonts**: Inter (Google Fonts)
@@ -59,12 +59,17 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
-5. **Run the application**
+5. **Configure MySQL connection**
+    ```
+    DATABASE_URL=mysql://username:password@localhost:3306/grand_hotel
+    ```
+
+6. **Run the application**
 ```bash
 python app.py
 ```
 
-6. **Access the application**
+7. **Access the application**
 ```
 http://127.0.0.1:5000
 ```
@@ -143,7 +148,7 @@ git push heroku main
 Grand Hotel/
 ├── app.py                  # Flask application and routes
 ├── database.py             # Database operations and models
-├── schema.sql              # Database schema
+├── mysql_schema.sql        # MySQL schema
 ├── requirements.txt        # Python dependencies
 ├── .env.example           # Environment variables template
 ├── .gitignore             # Git ignore rules
@@ -248,6 +253,9 @@ Edit CSS variables in [static/css/style.css](static/css/style.css):
 - **customers**: Guest information (name, contact, ID proof)
 - **rooms**: Room inventory (number, type, price, capacity, status)
 - **bookings**: Reservation records with check-in/out dates
+
+Schema files:
+- `mysql_schema.sql` for MySQL
 - **services**: Available hotel services catalog
 - **booking_services**: Services added to specific bookings
 - **bills**: Final billing records with payment details
@@ -255,7 +263,7 @@ Edit CSS variables in [static/css/style.css](static/css/style.css):
 ## 🛠️ Troubleshooting
 
 **Database Issues:**
-- Delete `hotel_billing.db` and restart app to reinitialize
+- Ensure MySQL server is running and `DATABASE_URL` points to an existing database
 
 **Port Already in Use:**
 ```bash

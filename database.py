@@ -1,8 +1,14 @@
-import sqlite3
 from datetime import datetime, date
+from decimal import Decimal
 import os
+from urllib.parse import urlparse
 
-DATABASE_NAME = 'hotel_billing.db'
+try:
+    import pymysql
+except ImportError:
+    pymysql = None
+
+DATABASE_URL = os.environ.get('DATABASE_URL')
 
 DEFAULT_ROOMS = [
     ('101', 'Standard Single', 1500.00, 1, 'Cozy single room with basic amenities'),
@@ -17,38 +23,129 @@ DEFAULT_ROOMS = [
     ('402', 'Economy Single', 1300.00, 1, 'Budget-friendly single room with essential amenities')
 ]
 
+DEFAULT_SERVICES = [
+    ('Room Service - Breakfast', 500.00, 'Continental breakfast delivered to room'),
+    ('Room Service - Lunch', 800.00, 'Lunch meal service'),
+    ('Room Service - Dinner', 1000.00, 'Dinner meal service'),
+    ('Laundry Service', 300.00, 'Per piece laundry service'),
+    ('Spa & Massage', 2000.00, 'One hour spa and massage session'),
+    ('Airport Pickup', 1500.00, 'Airport to hotel transfer'),
+    ('Mini Bar', 500.00, 'Mini bar consumption'),
+    ('Extra Bed', 800.00, 'Additional bed in room'),
+    ('Wi-Fi Premium', 200.00, 'High-speed internet access per day'),
+    ('Conference Room', 5000.00, 'Conference room rental per hour')
+]
+
+
+def _as_date(value):
+    if isinstance(value, date):
+        return value
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, str):
+        return datetime.strptime(value, '%Y-%m-%d').date()
+    raise TypeError(f'Unsupported date value: {type(value)!r}')
+
+
+def _mysql_connection_config():
+    if not DATABASE_URL:
+        raise RuntimeError('DATABASE_URL is not set. Add it to your .env file or environment.')
+
+    if not (DATABASE_URL.startswith('mysql://') or DATABASE_URL.startswith('mysql+pymysql://')):
+        raise RuntimeError('Only MySQL is supported. Set DATABASE_URL like mysql://user:password@host:3306/grand_hotel')
+
+    parsed = urlparse(DATABASE_URL.replace('mysql+pymysql://', 'mysql://', 1))
+    return {
+        'host': parsed.hostname or 'localhost',
+        'port': parsed.port or 3306,
+        'user': parsed.username or 'root',
+        'password': parsed.password or '',
+        'database': (parsed.path or '/').lstrip('/'),
+    }
+
+
+def _adapt_query(query):
+    return query.replace('?', '%s')
+
+
+def _execute(conn, query, params=()):
+    cursor = conn.cursor()
+    cursor.execute(_adapt_query(query), params)
+    return cursor
+
+
+def _executemany(conn, query, params_seq):
+    cursor = conn.cursor()
+    cursor.executemany(_adapt_query(query), params_seq)
+    return cursor
+
+
+def _executescript(conn, script_text):
+    cursor = conn.cursor()
+    statements = [stmt.strip() for stmt in script_text.split(';') if stmt.strip()]
+    for statement in statements:
+        cursor.execute(statement)
+    return cursor
+
+
+def _table_exists(conn, table_name):
+    db_name = _mysql_connection_config()['database']
+    row = _execute(
+        conn,
+        'SELECT COUNT(*) AS cnt FROM information_schema.tables WHERE table_schema = ? AND table_name = ?',
+        (db_name, table_name),
+    ).fetchone()
+    return bool(row['cnt'])
+
 def get_db_connection():
-    """Create and return a database connection with optimized settings"""
-    conn = sqlite3.connect(DATABASE_NAME, timeout=10)
-    conn.row_factory = sqlite3.Row
-    # Enable query optimization
-    conn.execute('PRAGMA journal_mode=WAL')  # Write-Ahead Logging
-    conn.execute('PRAGMA synchronous=NORMAL')  # Faster writes
-    conn.execute('PRAGMA cache_size=-64000')  # 64MB cache
-    conn.execute('PRAGMA temp_store=MEMORY')  # Use memory for temp storage
-    return conn
+    """Create and return a MySQL database connection using DATABASE_URL."""
+    if pymysql is None:
+        raise RuntimeError('PyMySQL is not installed. Add it to requirements and reinstall dependencies.')
+
+    cfg = _mysql_connection_config()
+    if not cfg['database']:
+        raise RuntimeError('DATABASE_URL for MySQL must include a database name.')
+
+    return pymysql.connect(
+        host=cfg['host'],
+        port=cfg['port'],
+        user=cfg['user'],
+        password=cfg['password'],
+        database=cfg['database'],
+        cursorclass=pymysql.cursors.DictCursor,
+        charset='utf8mb4',
+        autocommit=False,
+    )
 
 def init_database():
     """Initialize the database with schema"""
-    if not os.path.exists(DATABASE_NAME):
+    conn = get_db_connection()
+    try:
+        should_initialize_schema = not _table_exists(conn, 'rooms')
+    finally:
+        conn.close()
+
+    if should_initialize_schema:
         conn = get_db_connection()
-        with open('schema.sql', 'r') as f:
-            conn.executescript(f.read())
+        with open('mysql_schema.sql', 'r') as f:
+            _executescript(conn, f.read())
         conn.commit()
         conn.close()
 
     ensure_default_rooms()
+    ensure_default_services()
 
 def ensure_default_rooms():
     """Ensure all default room numbers exist, including the new 10-room baseline."""
     conn = get_db_connection()
     existing_room_numbers = {
-        row['room_number'] for row in conn.execute('SELECT room_number FROM rooms').fetchall()
+        row['room_number'] for row in _execute(conn, 'SELECT room_number FROM rooms').fetchall()
     }
 
     missing_rooms = [room for room in DEFAULT_ROOMS if room[0] not in existing_room_numbers]
     if missing_rooms:
-        conn.executemany(
+        _executemany(
+            conn,
             'INSERT INTO rooms (room_number, room_type, price_per_night, capacity, description) VALUES (?, ?, ?, ?, ?)',
             missing_rooms
         )
@@ -57,31 +154,52 @@ def ensure_default_rooms():
     conn.close()
     return len(missing_rooms)
 
+
+def ensure_default_services():
+    """Ensure seed services exist based on service name."""
+    conn = get_db_connection()
+    existing_service_names = {
+        row['service_name'] for row in _execute(conn, 'SELECT service_name FROM services').fetchall()
+    }
+
+    missing_services = [service for service in DEFAULT_SERVICES if service[0] not in existing_service_names]
+    if missing_services:
+        _executemany(
+            conn,
+            'INSERT INTO services (service_name, service_price, description) VALUES (?, ?, ?)',
+            missing_services,
+        )
+        conn.commit()
+
+    conn.close()
+    return len(missing_services)
+
 def get_available_rooms():
     """Get all available rooms"""
     conn = get_db_connection()
-    rooms = conn.execute('SELECT * FROM rooms WHERE status = "Available"').fetchall()
+    rooms = _execute(conn, 'SELECT * FROM rooms WHERE status = "Available"').fetchall()
     conn.close()
     return rooms
 
 def get_all_rooms():
     """Get all rooms"""
     conn = get_db_connection()
-    rooms = conn.execute('SELECT * FROM rooms ORDER BY room_number').fetchall()
+    rooms = _execute(conn, 'SELECT * FROM rooms ORDER BY room_number').fetchall()
     conn.close()
     return rooms
 
 def get_room_by_id(room_id):
     """Get room by ID"""
     conn = get_db_connection()
-    room = conn.execute('SELECT * FROM rooms WHERE room_id = ?', (room_id,)).fetchone()
+    room = _execute(conn, 'SELECT * FROM rooms WHERE room_id = ?', (room_id,)).fetchone()
     conn.close()
     return room
 
 def add_customer(first_name, last_name, email, phone, id_proof_type, id_proof_number, address):
     """Add a new customer"""
     conn = get_db_connection()
-    cursor = conn.execute(
+    cursor = _execute(
+        conn,
         'INSERT INTO customers (first_name, last_name, email, phone, id_proof_type, id_proof_number, address) VALUES (?, ?, ?, ?, ?, ?, ?)',
         (first_name, last_name, email, phone, id_proof_type, id_proof_number, address)
     )
@@ -93,14 +211,15 @@ def add_customer(first_name, last_name, email, phone, id_proof_type, id_proof_nu
 def create_booking(customer_id, room_id, check_in_date, number_of_guests, special_requests=''):
     """Create a new booking"""
     conn = get_db_connection()
-    cursor = conn.execute(
+    cursor = _execute(
+        conn,
         'INSERT INTO bookings (customer_id, room_id, check_in_date, number_of_guests, special_requests) VALUES (?, ?, ?, ?, ?)',
         (customer_id, room_id, check_in_date, number_of_guests, special_requests)
     )
     booking_id = cursor.lastrowid
     
     # Update room status
-    conn.execute('UPDATE rooms SET status = "Occupied" WHERE room_id = ?', (room_id,))
+    _execute(conn, 'UPDATE rooms SET status = "Occupied" WHERE room_id = ?', (room_id,))
     conn.commit()
     conn.close()
     return booking_id
@@ -108,7 +227,7 @@ def create_booking(customer_id, room_id, check_in_date, number_of_guests, specia
 def get_active_bookings():
     """Get all active bookings"""
     conn = get_db_connection()
-    bookings = conn.execute('''
+    bookings = _execute(conn, '''
         SELECT b.*, c.first_name, c.last_name, c.phone, r.room_number, r.room_type, r.price_per_night
         FROM bookings b
         JOIN customers c ON b.customer_id = c.customer_id
@@ -122,7 +241,7 @@ def get_active_bookings():
 def get_booking_by_id(booking_id):
     """Get booking details by ID"""
     conn = get_db_connection()
-    booking = conn.execute('''
+    booking = _execute(conn, '''
         SELECT b.*, c.*, r.room_number, r.room_type, r.price_per_night
         FROM bookings b
         JOIN customers c ON b.customer_id = c.customer_id
@@ -135,14 +254,15 @@ def get_booking_by_id(booking_id):
 def get_all_services():
     """Get all available services"""
     conn = get_db_connection()
-    services = conn.execute('SELECT * FROM services ORDER BY service_name').fetchall()
+    services = _execute(conn, 'SELECT * FROM services ORDER BY service_name').fetchall()
     conn.close()
     return services
 
 def add_service_to_booking(booking_id, service_id, quantity=1):
     """Add a service to a booking"""
     conn = get_db_connection()
-    conn.execute(
+    _execute(
+        conn,
         'INSERT INTO booking_services (booking_id, service_id, quantity) VALUES (?, ?, ?)',
         (booking_id, service_id, quantity)
     )
@@ -152,7 +272,7 @@ def add_service_to_booking(booking_id, service_id, quantity=1):
 def get_booking_services(booking_id):
     """Get all services for a booking"""
     conn = get_db_connection()
-    services = conn.execute('''
+    services = _execute(conn, '''
         SELECT bs.*, s.service_name, s.service_price
         FROM booking_services bs
         JOIN services s ON bs.service_id = s.service_id
@@ -163,15 +283,14 @@ def get_booking_services(booking_id):
 
 def calculate_bill(booking_id, check_out_date):
     """Calculate bill for a booking"""
-    conn = get_db_connection()
     booking = get_booking_by_id(booking_id)
     
     if not booking:
         return None
     
     # Calculate number of nights
-    check_in = datetime.strptime(booking['check_in_date'], '%Y-%m-%d').date()
-    check_out = datetime.strptime(check_out_date, '%Y-%m-%d').date()
+    check_in = _as_date(booking['check_in_date'])
+    check_out = _as_date(check_out_date)
     nights = (check_out - check_in).days
     if nights <= 0:
         nights = 1
@@ -185,24 +304,25 @@ def calculate_bill(booking_id, check_out_date):
     
     # Calculate tax (12% GST)
     subtotal = room_charges + service_charges
-    tax_amount = subtotal * 0.12
+    tax_amount = subtotal * Decimal('0.12')
     
     # Total amount
     total_amount = subtotal + tax_amount
     
     return {
         'nights': nights,
-        'room_charges': room_charges,
-        'service_charges': service_charges,
-        'subtotal': subtotal,
-        'tax_amount': tax_amount,
-        'total_amount': total_amount
+        'room_charges': float(room_charges),
+        'service_charges': float(service_charges),
+        'subtotal': float(subtotal),
+        'tax_amount': float(tax_amount),
+        'total_amount': float(total_amount)
     }
 
 def create_bill(booking_id, room_charges, service_charges, tax_amount, discount, total_amount, payment_method):
     """Create a bill for checkout"""
     conn = get_db_connection()
-    cursor = conn.execute(
+    cursor = _execute(
+        conn,
         'INSERT INTO bills (booking_id, room_charges, service_charges, tax_amount, discount, total_amount, payment_status, payment_method) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
         (booking_id, room_charges, service_charges, tax_amount, discount, total_amount, 'Paid', payment_method)
     )
@@ -214,18 +334,19 @@ def create_bill(booking_id, room_charges, service_charges, tax_amount, discount,
 def checkout_booking(booking_id, check_out_date, room_id):
     """Process checkout"""
     conn = get_db_connection()
-    conn.execute(
+    _execute(
+        conn,
         'UPDATE bookings SET check_out_date = ?, booking_status = "Completed" WHERE booking_id = ?',
         (check_out_date, booking_id)
     )
-    conn.execute('UPDATE rooms SET status = "Available" WHERE room_id = ?', (room_id,))
+    _execute(conn, 'UPDATE rooms SET status = "Available" WHERE room_id = ?', (room_id,))
     conn.commit()
     conn.close()
 
 def get_bill_by_id(bill_id):
     """Get bill details"""
     conn = get_db_connection()
-    bill = conn.execute('''
+    bill = _execute(conn, '''
         SELECT b.*, bk.booking_id, bk.check_in_date, bk.check_out_date, bk.number_of_guests,
                c.first_name, c.last_name, c.email, c.phone, c.address, c.id_proof_type, c.id_proof_number,
                r.room_number, r.room_type, r.price_per_night
@@ -241,7 +362,7 @@ def get_bill_by_id(bill_id):
 def get_all_bills():
     """Get all bills"""
     conn = get_db_connection()
-    bills = conn.execute('''
+    bills = _execute(conn, '''
         SELECT b.*, c.first_name, c.last_name, r.room_number, bk.check_in_date, bk.check_out_date
         FROM bills b
         JOIN bookings bk ON b.booking_id = bk.booking_id
